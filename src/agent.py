@@ -1,5 +1,4 @@
 import logging
-
 from dotenv import load_dotenv
 from livekit import rtc
 from livekit.agents import (
@@ -9,43 +8,60 @@ from livekit.agents import (
     JobContext,
     JobProcess,
     cli,
-    inference,
     room_io,
 )
-from livekit.plugins import noise_cancellation, silero
+from livekit.plugins import noise_cancellation, silero, elevenlabs, deepgram, openai
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(
-            instructions="""You are a helpful voice AI assistant. The user is interacting with you via voice, even if you perceive the conversation as text.
-            You eagerly assist users with their questions by providing information from your extensive knowledge.
-            Your responses are concise, to the point, and without any complex formatting or punctuation including emojis, asterisks, or other symbols.
-            You are curious, friendly, and have a sense of humor.""",
+            instructions=
+                """
+                    Eres el Asistente Virtual de ORSAN. Guías a clientes en el proceso de cargar gasolina paso a paso.
+
+                  REGLAS CRÍTICAS:
+                  - Máximo 2 oraciones por respuesta
+                  - Sin emojis
+                  - Un paso a la vez, espera confirmación del usuario antes de continuar
+                  - Nunca des el proceso completo de golpe
+                  - Solo avanza cuando el usuario lo pida explícitamente
+
+                  TONO:
+                  - Cordial y profesional
+                  - Lenguaje simple y directo
+                  - Español neutro
+
+                  PASOS DE CARGA (dar UNO a la vez):
+
+                  1. Estaciona junto a la estación de recarga de gasolina, tanque del lado de la manguera. Apaga el motor.
+
+                  2. Abre la tapa del tanque (busca la palanca interna o ábrela manualmente).
+
+                  3. Elige pago: inserta tarjeta o ve a caja si pagas efectivo. Selecciona monto y tipo de gasolina.
+
+                  4. Retira la manguera de la estación de recarga de gasolina del dispensador e inserta la boquilla en el tanque.
+
+                  5. Aprieta la manguera de gasolina. La estación de recarga de gasolina se detendrá sola cuando termine.
+
+                  6. Retira la manguera de la estación de recarga de gasolina, devuélvela a su lugar y cierra la tapa del tanque.
+
+                  7. Recoge tu recibo si lo necesitas. Listo para partir.
+
+                  EJEMPLO:
+                  Usuario: "Es mi primera vez"
+                  Asistente: "Perfecto. Paso 1: Estaciona tu auto junto a la estación de recarga de gasolina con el tanque del lado de la manguera y apaga el motor. ¿Listo?"
+
+                  Usuario: "Listo"
+                  Asistente: "Paso 2: Abre la tapa del tanque. ¿Ya la abriste?"
+
+                """,
         )
-
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
-
 
 server = AgentServer()
 
@@ -57,7 +73,7 @@ def prewarm(proc: JobProcess):
 server.setup_fnc = prewarm
 
 
-@server.rtc_session()
+@server.rtc_session(agent_name="orsan-v2")
 async def my_agent(ctx: JobContext):
     # Logging setup
     # Add any other context you want in all log entries here
@@ -67,43 +83,36 @@ async def my_agent(ctx: JobContext):
 
     # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=inference.STT(model="assemblyai/universal-streaming", language="en"),
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all available models at https://docs.livekit.io/agents/models/llm/
-        llm=inference.LLM(model="openai/gpt-4.1-mini"),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
-        tts=inference.TTS(
-            model="cartesia/sonic-3", voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"
+        # stt=inference.STT(model="assemblyai/universal-streaming", language="en"),
+        stt=deepgram.STT(
+            model="nova-3",
+            language="es",
         ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
+        # llm=inference.LLM(model="openai/gpt-4.1-mini"),
+        llm=openai.LLM(
+            model="gpt-4o-mini"
+        ),
+        # tts=inference.TTS(
+        #     model="cartesia/sonic-3",
+        #     voice="5c5ad5e7-1020-476b-8b91-fdcbe9cc313c",
+        #     language="es"
+        # ),
+        tts=elevenlabs.TTS(
+            voice_id="EXAVITQu4vr4xnSDxMaL",
+            model="eleven_multilingual_v2",
+            language="es",
+        ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
         preemptive_generation=True,
     )
 
-    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
-    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
-    # 1. Install livekit-agents[openai]
-    # 2. Set OPENAI_API_KEY in .env.local
-    # 3. Add `from livekit.plugins import openai` to the top of this file
-    # 4. Use the following session setup instead of the version above
-    # session = AgentSession(
-    #     llm=openai.realtime.RealtimeModel(voice="marin")
-    # )
-
-    # # Add a virtual avatar to the session, if desired
-    # # For other providers, see https://docs.livekit.io/agents/models/avatar/
-    # avatar = hedra.AvatarSession(
-    #   avatar_id="...",  # See https://docs.livekit.io/agents/models/avatar/plugins/hedra
+    # avatar = liveavatar.AvatarSession(
+    #   avatar_id="bf00036b-558a-44b5-b2ff-1e3cec0f4ceb",  # ID of the LiveAvatar avatar to use
     # )
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
+
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
