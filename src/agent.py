@@ -1,4 +1,5 @@
 import logging
+import os
 from dotenv import load_dotenv
 from livekit import rtc
 from livekit.agents import (
@@ -7,16 +8,73 @@ from livekit.agents import (
     AgentSession,
     JobContext,
     JobProcess,
+    RunContext,
     cli,
     room_io,
 )
+from livekit.agents.llm import function_tool
 from livekit.plugins import noise_cancellation, silero, elevenlabs, deepgram, openai
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from openai import OpenAI
+from supabase import create_client
 
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
+
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+supabase = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_SERVICE_KEY")
+)
+
+def get_embedding(text):
+    res = openai_client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return res.data[0].embedding
+
+def search_rag(query, k=3, match_threshold=0.5):
+    query_embedding = get_embedding(query)
+
+    res = supabase.rpc("match_documents", {
+        "query_embedding": query_embedding,
+        "match_count": k,
+        "match_threshold": match_threshold
+    }).execute()
+
+    return [
+        {
+            "title": row["title"],
+            "body": row["body"],
+            "similarity": row["similarity"]
+        }
+        for row in res.data
+    ]
+
+@function_tool
+async def buscar_informacion_orsan(ctx: RunContext, consulta: str) -> str:
+    """
+    Busca información relevante sobre ORSAN Energía en la base de conocimientos.
+    Usa esta herramienta cuando el usuario pregunte sobre la empresa, su historia, operaciones, valores o cualquier información corporativa.
+    
+    Args:
+        consulta: La pregunta o tema sobre el que el usuario quiere información
+    """
+    resultados = search_rag(consulta, k=3)
+    
+    if not resultados:
+        return "No encontré información específica sobre ese tema en la base de conocimientos."
+    
+    contexto = "Información encontrada:\n\n"
+    for i, doc in enumerate(resultados, 1):
+        contexto += f"{i}. {doc['title']}\n{doc['body']}\n\n"
+    
+    return contexto
+
 
 class Assistant(Agent):
     def __init__(self) -> None:
@@ -31,6 +89,7 @@ class Assistant(Agent):
                   - Un paso a la vez, espera confirmación del usuario antes de continuar
                   - Nunca des el proceso completo de golpe
                   - Solo avanza cuando el usuario lo pida explícitamente
+                  - Cuando el usuario pregunte sobre la empresa ORSAN, su historia, operaciones o información corporativa, usa la herramienta buscar_informacion_orsan para obtener información precisa
 
                   TONO:
                   - Cordial y profesional
@@ -61,6 +120,7 @@ class Assistant(Agent):
                   Asistente: "Paso 2: Abre la tapa del tanque. ¿Ya la abriste?"
 
                 """,
+            tools=[buscar_informacion_orsan],
         )
 
 server = AgentServer()
@@ -73,7 +133,7 @@ def prewarm(proc: JobProcess):
 server.setup_fnc = prewarm
 
 
-@server.rtc_session(agent_name="orsan-v2")
+@server.rtc_session(agent_name="orsan-v3")
 async def my_agent(ctx: JobContext):
     # Logging setup
     # Add any other context you want in all log entries here
