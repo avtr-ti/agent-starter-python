@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 
 load_dotenv(".env.local")
 
+DB_TABLE_NAME = os.getenv("DB_TABLE_NAME")
+DB_SCHEMA = os.getenv("DB_SCHEMA")
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 supabase = create_client(
@@ -47,12 +50,20 @@ docs = [
 ]
 
 for title, body in docs:
-    text_for_embedding = f"{title}\n\n{body}"
-    emb = embed_text(text_for_embedding)
+    content = f"{title}\n\n{body}"
+    emb = embed_text(content)
 
-    supabase.table("documents").insert({
-        "title": title,
-        "body": body,
-        "embedding": emb
-    }).execute()
+    # Use schema() method if schema is not "public", otherwise use table() directly
+    if DB_SCHEMA != "public":
+        supabase.schema(DB_SCHEMA).table(DB_TABLE_NAME).insert({
+            "content": content,
+            "metadata": {"title": title},
+            "embedding": emb
+        }).execute()
+    else:
+        supabase.table(DB_TABLE_NAME).insert({
+            "content": content,
+            "metadata": {"title": title},
+            "embedding": emb
+        }).execute()
 
