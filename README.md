@@ -61,6 +61,13 @@ Sign up for [LiveKit Cloud](https://cloud.livekit.io/) then set up the environme
 - `LIVEKIT_URL`
 - `LIVEKIT_API_KEY`
 - `LIVEKIT_API_SECRET`
+- `OPENAI_API_KEY` - Required for embeddings and LLM
+- `SUPABASE_URL` - Your Supabase project URL
+- `SUPABASE_SERVICE_KEY` - Your Supabase service role key
+- `AGENT_NAME` - Name for agent dispatch (optional)
+- `DB_TABLE_NAME` - Database table name
+- `DB_SCHEMA` - Database schema name
+- `DB_RPC_FUNCTION` - RPC function name for vector search
 
 You can load the LiveKit environment automatically using the [LiveKit CLI](https://docs.livekit.io/home/cli/cli-setup):
 
