@@ -1,6 +1,11 @@
 import asyncio
 import logging
 import os
+import random
+import tempfile
+import threading
+import time
+from pathlib import Path
 from dotenv import load_dotenv
 from livekit import rtc, api
 from livekit.agents import (
@@ -219,31 +224,81 @@ def prewarm(proc: JobProcess):
 
 server.setup_fnc = prewarm
 
+# Lock compartido para evitar múltiples redespachos simultáneos
+_redispatch_lock = threading.Lock()
+
+def _get_redispatch_lock_file():
+    """Obtiene el archivo de lock para el redespacho."""
+    if TARGET_ROOM:
+        return Path(tempfile.gettempdir()) / f"livekit_redispatch_{TARGET_ROOM}.lock"
+    return None
 
 async def auto_dispatch_to_room():
     """
     Despacha automáticamente el agente a la sala objetivo cuando el servidor se inicia.
+    Usa un lock de archivo para evitar múltiples redespachos simultáneos.
     """
+    # Intentar adquirir el lock de archivo para evitar múltiples redespachos
+    lock_file = _get_redispatch_lock_file()
+    lock_acquired = False
+    lock_file_handle = None
+    
+    if not lock_file:
+        logger.warning("TARGET_ROOM no está definido, no se puede crear lock de redespacho")
+        return
+    
     try:
-        lkapi = api.LiveKitAPI(
-            url=os.getenv("LIVEKIT_URL"),
-            api_key=os.getenv("LIVEKIT_API_KEY"),
-            api_secret=os.getenv("LIVEKIT_API_SECRET"),
-        )
+        # Intentar crear/abrir el archivo de lock de forma exclusiva
+        try:
+            lock_file_handle = lock_file.open('x')
+            lock_acquired = True
+        except FileExistsError:
+            # Si el archivo ya existe, otro proceso ya está redespachando
+            logger.debug(f"Otro proceso ya está redespachando a '{TARGET_ROOM}', saltando redespacho")
+            return
         
-        # Crear dispatch a la sala objetivo
-        dispatch = await lkapi.agent_dispatch.create_dispatch(
-            api.CreateAgentDispatchRequest(
-                agent_name=AGENT_NAME,
-                room=TARGET_ROOM,
+        # Pequeño delay adicional para asegurar que solo un proceso proceda
+        await asyncio.sleep(0.2)
+        
+        lkapi = None
+        try:
+            lkapi = api.LiveKitAPI(
+                url=os.getenv("LIVEKIT_URL"),
+                api_key=os.getenv("LIVEKIT_API_KEY"),
+                api_secret=os.getenv("LIVEKIT_API_SECRET"),
             )
-        )
-        logger.info(f"Agente despachado automáticamente a la sala '{TARGET_ROOM}' (Job ID: {dispatch.job_id})")
-        
-        await lkapi.aclose()
-    except Exception as e:
-        logger.warning(f"No se pudo crear dispatch automático a '{TARGET_ROOM}': {e}")
-        logger.info("El agente esperará a ser despachado manualmente o por reglas de dispatch")
+            
+            # Crear dispatch a la sala objetivo
+            dispatch = await lkapi.agent_dispatch.create_dispatch(
+                api.CreateAgentDispatchRequest(
+                    agent_name=AGENT_NAME,
+                    room=TARGET_ROOM,
+                )
+            )
+            logger.info(f"Agente despachado automáticamente a la sala '{TARGET_ROOM}' (Job ID: {dispatch.job_id})")
+        except Exception as e:
+            # Si el error es que ya existe un dispatch, no es un problema crítico
+            error_msg = str(e).lower()
+            if 'already' in error_msg or 'exists' in error_msg or 'job_id' in error_msg:
+                logger.debug(f"Dispatch ya existe para '{TARGET_ROOM}': {type(e).__name__}")
+            else:
+                logger.warning(f"No se pudo crear dispatch automático a '{TARGET_ROOM}': {type(e).__name__}: {str(e)}")
+                logger.info("El agente esperará a ser despachado manualmente o por reglas de dispatch")
+        finally:
+            # Asegurar que la sesión HTTP se cierre siempre
+            if lkapi is not None:
+                try:
+                    await lkapi.aclose()
+                except Exception as e:
+                    logger.debug(f"Error al cerrar sesión de API de LiveKit: {e}")
+    finally:
+        # Liberar el lock eliminando el archivo
+        if lock_acquired and lock_file_handle is not None and lock_file:
+            try:
+                lock_file_handle.close()
+                lock_file.unlink(missing_ok=True)
+            except Exception as e:
+                logger.debug(f"Error al liberar lock de redespacho: {e}")
 
 
 @server.rtc_session(agent_name=AGENT_NAME)
@@ -286,6 +341,8 @@ async def my_agent(ctx: JobContext):
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
 
+    # Bandera para evitar múltiples redespachos
+    redispatch_scheduled = False
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
@@ -300,6 +357,65 @@ async def my_agent(ctx: JobContext):
             close_on_disconnect=False,  # Mantener el agente en la room aunque no haya participantes
         ),
     )
+
+    # Handler para detectar cuando se cierra la sesión y redespachar el agente
+    def on_session_close(ev):
+        """
+        Detecta cuando la sesión se cierra y redespacha el agente a la sala.
+        """
+        nonlocal redispatch_scheduled
+        
+        # Evitar múltiples redespachos
+        if redispatch_scheduled:
+            return
+        
+        redispatch_scheduled = True
+        
+        logger.info(
+            f"Sesión cerrada en la sala '{ctx.room.name}'. "
+            f"Razón: {ev.reason}. Redespachando agente a la sala."
+        )
+        
+        # Ejecutar el redespacho en un thread separado para que se complete
+        # incluso si el proceso principal está terminando
+        def redispatch_in_thread():
+            """Ejecuta el redespacho en un thread separado."""
+            # Pequeño delay aleatorio para evitar que múltiples procesos redespachen simultáneamente
+            time.sleep(random.uniform(0.1, 0.5))
+            
+            try:
+                # Crear un nuevo event loop para este thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    # Ejecutar el redespacho
+                    loop.run_until_complete(auto_dispatch_to_room())
+                finally:
+                    # Cerrar todas las tareas pendientes y el loop
+                    try:
+                        pending = asyncio.all_tasks(loop)
+                        for task in pending:
+                            task.cancel()
+                        if pending:
+                            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    except Exception:
+                        pass  # Ignorar errores al limpiar
+                    finally:
+                        loop.close()
+            except Exception as e:
+                logger.error(f"Error al redespachar agente después de cierre de sesión: {type(e).__name__}: {str(e)}")
+        
+        # Iniciar el thread como daemon para que no bloquee la salida del proceso
+        # El redespacho debería completarse rápidamente (solo una llamada HTTP)
+        dispatch_thread = threading.Thread(target=redispatch_in_thread, daemon=True, name="redispatch_thread")
+        dispatch_thread.start()
+        
+        # Dar un momento para que el thread inicie y ejecute el redespacho
+        # pero no bloquear indefinidamente
+        dispatch_thread.join(timeout=2.0)  # Timeout de 2 segundos
+
+    # Registrar el handler para el evento de cierre de sesión
+    session.on("close", on_session_close)
 
     # Join the room and connect to the user
     await ctx.connect()
