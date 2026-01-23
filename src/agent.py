@@ -29,7 +29,7 @@ AGENT_NAME = os.getenv("AGENT_NAME")
 DB_TABLE_NAME = os.getenv("DB_TABLE_NAME")
 DB_SCHEMA = os.getenv("DB_SCHEMA")
 DB_RPC_FUNCTION = os.getenv("DB_RPC_FUNCTION")
-TARGET_ROOM = os.getenv("TARGET_ROOM", "orsan-room")
+TARGET_ROOM = os.getenv("ROOM_NAME")
 
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
