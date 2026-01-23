@@ -1,7 +1,8 @@
+import asyncio
 import logging
 import os
 from dotenv import load_dotenv
-from livekit import rtc
+from livekit import rtc, api
 from livekit.agents import (
     Agent,
     AgentServer,
@@ -10,6 +11,7 @@ from livekit.agents import (
     JobProcess,
     RunContext,
     cli,
+    inference,
     room_io,
 )
 from livekit.agents.llm import function_tool
@@ -27,6 +29,7 @@ AGENT_NAME = os.getenv("AGENT_NAME")
 DB_TABLE_NAME = os.getenv("DB_TABLE_NAME")
 DB_SCHEMA = os.getenv("DB_SCHEMA")
 DB_RPC_FUNCTION = os.getenv("DB_RPC_FUNCTION")
+TARGET_ROOM = os.getenv("TARGET_ROOM", "orsan-room")
 
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -217,6 +220,32 @@ def prewarm(proc: JobProcess):
 server.setup_fnc = prewarm
 
 
+async def auto_dispatch_to_room():
+    """
+    Despacha automáticamente el agente a la sala objetivo cuando el servidor se inicia.
+    """
+    try:
+        lkapi = api.LiveKitAPI(
+            url=os.getenv("LIVEKIT_URL"),
+            api_key=os.getenv("LIVEKIT_API_KEY"),
+            api_secret=os.getenv("LIVEKIT_API_SECRET"),
+        )
+        
+        # Crear dispatch a la sala objetivo
+        dispatch = await lkapi.agent_dispatch.create_dispatch(
+            api.CreateAgentDispatchRequest(
+                agent_name=AGENT_NAME,
+                room=TARGET_ROOM,
+            )
+        )
+        logger.info(f"Agente despachado automáticamente a la sala '{TARGET_ROOM}' (Job ID: {dispatch.job_id})")
+        
+        await lkapi.aclose()
+    except Exception as e:
+        logger.warning(f"No se pudo crear dispatch automático a '{TARGET_ROOM}': {e}")
+        logger.info("El agente esperará a ser despachado manualmente o por reglas de dispatch")
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def my_agent(ctx: JobContext):
     # Logging setup
@@ -227,7 +256,7 @@ async def my_agent(ctx: JobContext):
 
     # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
     session = AgentSession(
-        # stt=inference.STT(model="assemblyai/universal-streaming", language="en"),
+        # stt=inference.STT(model="assemblyai/universal-streaming", language="es"),
         stt=deepgram.STT(
             model="nova-3",
             language="es",
@@ -261,13 +290,14 @@ async def my_agent(ctx: JobContext):
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
         agent=Assistant(),
-        room=ctx.room,
+        room=ctx.room,  # Usar ctx.room que ya está asignado por el dispatch
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
                 noise_cancellation=lambda params: noise_cancellation.BVCTelephony()
                 if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
                 else noise_cancellation.BVC(),
             ),
+            close_on_disconnect=False,  # Mantener el agente en la room aunque no haya participantes
         ),
     )
 
@@ -275,5 +305,36 @@ async def my_agent(ctx: JobContext):
     await ctx.connect()
 
 
+async def start_server_with_auto_dispatch():
+    """
+    Inicia el servidor y crea un dispatch automático a la sala objetivo después de un breve delay.
+    """
+    # Esperar un momento para que el servidor se registre
+    await asyncio.sleep(2)
+    
+    # Crear dispatch automático a la sala objetivo
+    if AGENT_NAME and os.getenv("LIVEKIT_URL") and os.getenv("LIVEKIT_API_KEY"):
+        try:
+            await auto_dispatch_to_room()
+        except Exception as e:
+            logger.warning(f"Error al crear dispatch automático: {e}")
+
+
 if __name__ == "__main__":
+    # Iniciar el dispatch automático en segundo plano
+    if AGENT_NAME and os.getenv("LIVEKIT_URL") and os.getenv("LIVEKIT_API_KEY"):
+        import threading
+        
+        def run_dispatch():
+            """Ejecuta el dispatch automático en un hilo separado."""
+            try:
+                asyncio.run(start_server_with_auto_dispatch())
+            except Exception as e:
+                logger.warning(f"Error en hilo de dispatch automático: {e}")
+        
+        # Iniciar el hilo de dispatch automático
+        dispatch_thread = threading.Thread(target=run_dispatch, daemon=True)
+        dispatch_thread.start()
+    
+    # Iniciar el servidor del agente
     cli.run_app(server)
