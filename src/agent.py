@@ -34,6 +34,7 @@ TTS = os.getenv("TTS")
 STT = os.getenv("STT")
 LIVEAVATAR_ID = os.getenv("LIVEAVATAR_ID")
 ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID")
+ELEVEN_MODEL= os.getenv("ELEVEN_MODEL")
 DEEPGRAM_MODEL_STT = os.getenv("DEEPGRAM_MODEL_STT")
 DEEPGRAM_MODEL_TTS = os.getenv("DEEPGRAM_MODEL_TTS")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL")
@@ -251,9 +252,9 @@ async def my_agent(ctx: JobContext):
 
         tts=elevenlabs.TTS(
             voice_id=ELEVEN_VOICE_ID,
-            model=ELEVEN_VOICE_ID,
+            model=ELEVEN_MODEL,
             language="es",
-        ) if TTS == "ELEVENLABS" else deepgram.TTS(
+        ) if TTS == "ELEVEN" else deepgram.TTS(
             model=DEEPGRAM_MODEL_TTS,
         ) if TTS == "DEEPGRAM" else inference.TTS(
             model="cartesia/sonic-3",
