@@ -10,10 +10,11 @@ from livekit.agents import (
     JobProcess,
     RunContext,
     cli,
+    inference,
     room_io,
 )
 from livekit.agents.llm import function_tool
-from livekit.plugins import noise_cancellation, silero, elevenlabs, deepgram, openai, groq, mistralai
+from livekit.plugins import noise_cancellation, silero, elevenlabs, deepgram, openai, groq, mistralai, liveavatar
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from openai import OpenAI
 from supabase import create_client
@@ -27,6 +28,17 @@ AGENT_NAME = os.getenv("AGENT_NAME") or ""
 DB_TABLE_NAME = os.getenv("DB_TABLE_NAME")
 DB_SCHEMA = os.getenv("DB_SCHEMA")
 DB_RPC_FUNCTION = os.getenv("DB_RPC_FUNCTION")
+AVATAR = os.getenv("AVATAR")
+LLM = os.getenv("LLM")
+TTS = os.getenv("TTS")
+STT = os.getenv("STT")
+LIVEAVATAR_ID = os.getenv("LIVEAVATAR_ID")
+ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID")
+DEEPGRAM_MODEL_STT = os.getenv("DEEPGRAM_MODEL_STT")
+DEEPGRAM_MODEL_TTS = os.getenv("DEEPGRAM_MODEL_TTS")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL")
+GROQ_MODEL = os.getenv("GROQ_MODEL")
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL")
 
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -227,45 +239,43 @@ async def my_agent(ctx: JobContext):
 
     # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
     session = AgentSession(
-        # stt=inference.STT(model="assemblyai/universal-streaming", language="en"),
         stt=deepgram.STT(
-            model="nova-3",
+            model=DEEPGRAM_MODEL_STT,
             language="es",
+        ) if STT == "DEEPGRAM" else inference.STT(model="assemblyai/universal-streaming", language="en"),
+
+        llm=openai.LLM(
+            model=OPENAI_MODEL,
+        ) if LLM == "OPENAI" else groq.LLM(
+            model=GROQ_MODEL,
+        ) if LLM == "GROQ" else mistralai.LLM(
+            model=MISTRAL_MODEL,
+        ) if LLM == "MISTRAL" else inference.LLM(model="openai/gpt-4.1-mini"),
+
+        tts=elevenlabs.TTS(
+            voice_id=ELEVEN_VOICE_ID,
+            model=ELEVEN_VOICE_ID,
+            language="es",
+        ) if TTS == "ELEVENLABS" else deepgram.TTS(
+            model=DEEPGRAM_MODEL_TTS,
+        ) if TTS == "DEEPGRAM" else inference.TTS(
+            model="cartesia/sonic-3",
+            voice="5c5ad5e7-1020-476b-8b91-fdcbe9cc313c",
+            language="es"
         ),
-        # llm=inference.LLM(model="openai/gpt-4.1-mini"),
-        # llm=openai.LLM(
-        #     model="gpt-4o-mini"
-        # ),
-        # llm=groq.LLM(
-        #     model="llama-3.1-8b-instant"
-        # ),
-        llm=mistralai.LLM(
-            model="mistral-small-2506"
-        ),
-        # tts=inference.TTS(
-        #     model="cartesia/sonic-3",
-        #     voice="5c5ad5e7-1020-476b-8b91-fdcbe9cc313c",
-        #     language="es"
-        # ),
-        # tts=elevenlabs.TTS(
-        #     voice_id="EXAVITQu4vr4xnSDxMaL",
-        #     model="eleven_multilingual_v2",
-        #     language="es",
-        # ),
-        tts=deepgram.TTS(
-            model="aura-2-estrella-es",
-        ),
+
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=True,
     )
 
-    # avatar = liveavatar.AvatarSession(
-    #   avatar_id="bf00036b-558a-44b5-b2ff-1e3cec0f4ceb",  # ID of the LiveAvatar avatar to use
-    # )
-    # # Start the avatar and wait for it to join
-    # await avatar.start(session, room=ctx.room)
-
+    avatar = liveavatar.AvatarSession(
+          avatar_id=LIVEAVATAR_ID,
+    ) if AVATAR == "LIVEAVATAR" else None
+    
+    # Start the avatar and wait for it to join (if avatar is configured)
+    if avatar is not None:
+        await avatar.start(session, room=ctx.room)
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
