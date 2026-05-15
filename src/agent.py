@@ -8,13 +8,14 @@ from livekit.agents import (
     AgentSession,
     JobContext,
     JobProcess,
+    RoomOutputOptions,
     RunContext,
     cli,
     inference,
     room_io,
 )
 from livekit.agents.llm import function_tool
-from livekit.plugins import noise_cancellation, silero, elevenlabs, deepgram, openai, groq, mistralai, liveavatar
+from livekit.plugins import noise_cancellation, silero, elevenlabs, deepgram, openai, groq, mistralai,tavus
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from openai import OpenAI
 from supabase import create_client
@@ -32,7 +33,8 @@ AVATAR = os.getenv("AVATAR")
 LLM = os.getenv("LLM")
 TTS = os.getenv("TTS")
 STT = os.getenv("STT")
-LIVEAVATAR_ID = os.getenv("LIVEAVATAR_ID")
+TAVUS_PERSONA_ID = os.getenv("TAVUS_PERSONA_ID")
+TAVUS_REPLICA_ID = os.getenv("TAVUS_REPLICA_ID")
 ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID")
 ELEVEN_MODEL= os.getenv("ELEVEN_MODEL")
 DEEPGRAM_MODEL_STT = os.getenv("DEEPGRAM_MODEL_STT")
@@ -235,6 +237,8 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
+    await ctx.connect()
+
     # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
     session = AgentSession(
         stt=deepgram.STT(
@@ -267,30 +271,38 @@ async def my_agent(ctx: JobContext):
         preemptive_generation=True,
     )
 
-    avatar = liveavatar.AvatarSession(
-          avatar_id=LIVEAVATAR_ID,
-    ) if AVATAR == "LIVEAVATAR" else None
-    
-    # Start the avatar and wait for it to join (if avatar is configured)
+    avatar = tavus.AvatarSession(
+        persona_id=TAVUS_PERSONA_ID,
+        replica_id=TAVUS_REPLICA_ID
+    ) if AVATAR == "TAVUS" else None
+
     if avatar is not None:
         await avatar.start(session, room=ctx.room)
-
-    # Start the session, which initializes the voice pipeline and warms up the models
+    
     await session.start(
         agent=Assistant(),
         room=ctx.room,
-        room_options=room_io.RoomOptions(
-            audio_input=room_io.AudioInputOptions(
-                noise_cancellation=lambda params: noise_cancellation.BVCTelephony()
-                if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                else noise_cancellation.BVC(),
-            ),
-        ),
+        room_output_options=RoomOutputOptions(
+            audio_enabled=False  
+        )
     )
 
-    # Join the room and connect to the user
-    await ctx.connect()
+    # # Start the avatar and wait for it to join (if avatar is configured)
+    # if avatar is not None:
+    #     await avatar.start(session, room=ctx.room)
 
+    # # Start the session, which initializes the voice pipeline and warms up the models
+    # await session.start(
+    #     agent=Assistant(),
+    #     room=ctx.room,
+    #     room_options=room_io.RoomOptions(
+    #         audio_input=room_io.AudioInputOptions(
+    #             noise_cancellation=lambda params: noise_cancellation.BVCTelephony()
+    #             if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+    #             else noise_cancellation.BVC(),
+    #         ),
+    #     ),
+    # )
 
 if __name__ == "__main__":
     cli.run_app(server)
